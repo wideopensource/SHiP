@@ -24,48 +24,77 @@ enum ethertype_enum
     ETHERTYPE_ARP = 0x0806,
 };
 
-struct ethernet_frame_t
-{
-    uint8_t destination_mac[6];
-    uint8_t source_mac[6];
-    uint16_t ethertype;
-    uint8_t payload[];
-} __attribute__((packed));
-
 #define IPV4_PROTOCOL_VERSION 0x04
 #define IPV4_HEADER_WORD_SIZE 4
 #define IPV4_MINIMUM_HEADER_LENGTH_WORDS 5
 
 #define IPV4_PROTOCOL_ICMPV4 0x01
+#define IPV4_PROTOCOL_TCP 0x06
 #define IPV4_PROTOCOL_UDP 0x11
 
-struct ipv4_frame_t
+#define UDP_HEADER_LENGTH 8
+#define UDP_PORT_ECHO 7
+
+#define TCP_PORT_ECHO 7
+
+enum arp_constants_enum
 {
-    uint8_t header_length : 4;
-    uint8_t version : 4;
-    uint8_t type_of_service;
-    uint16_t frame_length;
-    uint16_t identification;
-    uint16_t flags : 3;
-    uint16_t fragment_offset : 13;
-    uint8_t time_to_live;
-    uint8_t protocol;
-    uint16_t header_checksum;
-    uint32_t source_ip;
-    uint32_t destination_ip;
-    uint8_t payload[];
+    ARP_HARDWARE_TYPE_ETHERNET = 0x0001,
+    ARP_PROTOCOL_TYPE_IPV4 = 0x0800,
+    ARP_OPERATION_TYPE_REQUEST = 0x0001,
+    ARP_OPERATION_TYPE_REPLY = 0x0002,
+};
+
+struct arp_frame_t
+{
+    uint16_t hardware_type;
+    uint16_t protocol_type;
+    uint8_t hardware_address_length;
+    uint8_t protocol_address_length;
+    uint16_t operation;
+    uint8_t sender_hardware_address[6];
+    uint32_t sender_protocol_address;
+    uint8_t target_hardware_address[6];
+    uint32_t target_protocol_address;
 } __attribute__((packed));
 
-uint8_t const *arp_lookup(uint32_t protocol_address);
+struct arp_cache_entry_t
+{
+    uint32_t protocol_address;
+    uint8_t hardware_address[6];
+};
 
-static SHiP_send_callback_t _send_func;
-static SHiP_log_callback_t _log_func;
+enum icmpv4_message_type_enum
+{
+    ICMPV4_MESSAGE_TYPE_ECHO_REPLY = 0x00,
+    ICMPV4_MESSAGE_TYPE_ECHO_REQUEST = 0x08,
+};
+
+enum icmpv4_message_code_enum
+{
+    ICMPV4_MESSAGE_CODE_ECHO_REPLY = 0x00,
+    ICMPV4_MESSAGE_CODE_ECHO_REQUEST = 0x00,
+};
+
+struct icmpv4_frame_t
+{
+    uint8_t type;
+    uint8_t code;
+    uint16_t checksum;
+    uint8_t payload[];
+} __attribute__((packed));
 
 #define LOGE(...) logger(__VA_ARGS__)
 #define LOGW(...) logger(__VA_ARGS__)
 #define LOGI(...) logger(__VA_ARGS__)
 #define LOGD(...) logger(__VA_ARGS__)
 #define LOGV(...) logger(__VA_ARGS__)
+
+uint8_t const *arp_lookup(uint32_t protocol_address);
+
+static struct arp_cache_entry_t arp_cache[ARP_CACHE_NUMBER_OF_ENTRIES];
+static int arp_cache_next_entry_index = 0;
+static struct SHiP_api _api;
 
 static void logger(char *str, ...)
 {
@@ -77,7 +106,7 @@ static void logger(char *str, ...)
 
     va_end(ap);
 
-    _log_func(buffer);
+    _api.log_callback(buffer);
 }
 
 // https://tools.ietf.org/html/rfc1071
@@ -132,7 +161,7 @@ static void ethernet_send_from(struct interface_t const *interface,
 
     int const frame_length = sizeof(struct ethernet_frame_t) + payload_length;
 
-    _send_func((uint8_t *)frame, frame_length);
+    _api.deliver_raw_frame_callback((uint8_t *)frame, frame_length);
 }
 
 void ipv4_send_from(struct interface_t const *interface,
@@ -141,41 +170,60 @@ void ipv4_send_from(struct interface_t const *interface,
 {
     struct ipv4_frame_t *ipv4_frame = (struct ipv4_frame_t *)frame->payload;
 
-    ipv4_frame->destination_ip = destination_ip;
-    ipv4_frame->source_ip = interface->protocol_address;
+    ipv4_frame->header_length = IPV4_MINIMUM_HEADER_LENGTH_WORDS;
 
     int const ipv4_frame_length =
         (ipv4_frame->header_length * IPV4_HEADER_WORD_SIZE) + payload_length;
-    ipv4_frame->frame_length = HTONS(ipv4_frame_length);
+
+    ipv4_frame->destination_ip = destination_ip;
+    ipv4_frame->source_ip = interface->protocol_address;
+    ipv4_frame->frame_length = ipv4_frame_length;
+
+    ipv4_frame->flags = 0;
+    ipv4_frame->identification = 0;
+    ipv4_frame->version = IPV4_PROTOCOL_VERSION;
+    ipv4_frame->time_to_live = 0xff;
+    ipv4_frame->type_of_service = 0;
+
+    INPLACE(HTONS, ipv4_frame->frame_length);
 
     ipv4_frame->header_checksum = 0;
     ipv4_frame->header_checksum = ipv4_checksum(ipv4_frame, ipv4_frame_length);
 
-    ethernet_send_from(interface, frame, ETHERTYPE_IPV4, ipv4_frame_length,
-                       arp_lookup(ipv4_frame->destination_ip));
+    uint8_t const *destination_mac = arp_lookup(ipv4_frame->destination_ip);
+    if (destination_mac)
+    {
+        ethernet_send_from(interface, frame, ETHERTYPE_IPV4, ipv4_frame_length,
+                           destination_mac);
+    }
+}
+
+void udp_send_from(struct interface_t const *interface,
+                   struct ethernet_frame_t *frame, uint8_t const *payload,
+                   int payload_length, uint32_t destination_ip,
+                   int destination_port, int source_port)
+{
+    int const udp_frame_length = UDP_HEADER_LENGTH + payload_length;
+
+    struct ipv4_frame_t *ipv4_frame = (struct ipv4_frame_t *)frame->payload;
+    struct udp_frame_t *udp_frame = (struct udp_frame_t *)ipv4_frame->payload;
+
+    memcpy(udp_frame->payload, payload, payload_length);
+
+    udp_frame->source_port = source_port;
+    udp_frame->destination_port = destination_port;
+    udp_frame->length = udp_frame_length;
+
+    INPLACE(HTONS, udp_frame->source_port);
+    INPLACE(HTONS, udp_frame->destination_port);
+    INPLACE(HTONS, udp_frame->length);
+
+    ipv4_frame->protocol = IPV4_PROTOCOL_UDP;
+
+    ipv4_send_from(interface, frame, udp_frame_length, destination_ip);
 }
 
 // https://en.wikipedia.org/wiki/Internet_Control_Message_Protocol
-
-enum icmpv4_message_type_enum
-{
-    ICMPV4_MESSAGE_TYPE_ECHO_REPLY = 0x00,
-    ICMPV4_MESSAGE_TYPE_ECHO_REQUEST = 0x08,
-};
-
-enum icmpv4_message_code_enum
-{
-    ICMPV4_MESSAGE_CODE_ECHO_REPLY = 0x00,
-    ICMPV4_MESSAGE_CODE_ECHO_REQUEST = 0x00,
-};
-
-struct icmpv4_frame_t
-{
-    uint8_t type;
-    uint8_t code;
-    uint16_t checksum;
-    uint8_t payload[];
-} __attribute__((packed));
 
 static void icmpv4_handle_frame(struct interface_t const *interface,
                                 struct ethernet_frame_t *frame)
@@ -215,19 +263,29 @@ static void icmpv4_handle_frame(struct interface_t const *interface,
     }
 }
 
+// https://en.wikipedia.org/wiki/Transmission_Control_Protocol
+
+static void tcp_handle_frame(struct interface_t const *interface,
+                             struct ethernet_frame_t *frame)
+{
+    struct ipv4_frame_t *ipv4_frame = (struct ipv4_frame_t *)frame->payload;
+    struct tcp_frame_t *tcp_frame = (struct tcp_frame_t *)ipv4_frame->payload;
+
+    // todo crz: checksum
+
+    unsigned const source_port = NTOHS(tcp_frame->source_port);
+    unsigned const destination_port = NTOHS(tcp_frame->destination_port);
+    int const frame_length = ipv4_frame->frame_length;
+    int const payload_length = frame_length - sizeof(struct tcp_frame_t);
+
+    LOGV("TCP: rx source port: %u, dest port: %u (%04x), payload length: %d",
+         source_port, destination_port, destination_port, payload_length);
+
+    _api.tcp_received_callback(interface, frame, frame_length);
+}
+
 // https://en.wikipedia.org/wiki/User_Datagram_Protocol
 // https://en.wikipedia.org/wiki/Echo_Protocol
-
-struct udp_frame_t
-{
-    uint16_t source_port;
-    uint16_t destination_port;
-    uint16_t length;
-    uint16_t checksum;
-    uint8_t payload[];
-} __attribute__((packed));
-
-#define UDP_PORT_ECHO 7
 
 static void udp_handle_frame(struct interface_t const *interface,
                              struct ethernet_frame_t *frame)
@@ -235,38 +293,31 @@ static void udp_handle_frame(struct interface_t const *interface,
     struct ipv4_frame_t *ipv4_frame = (struct ipv4_frame_t *)frame->payload;
     struct udp_frame_t *udp_frame = (struct udp_frame_t *)ipv4_frame->payload;
 
-    NTOHS_INPLACE(udp_frame->source_port);
-    NTOHS_INPLACE(udp_frame->destination_port);
-    NTOHS_INPLACE(udp_frame->length);
-
-    int const udp_frame_length = udp_frame->length;
-    int const udp_payload_length = udp_frame_length -
-                                   sizeof(struct udp_frame_t);
-
-    LOGV("UDP rx source port: %d, dest port: %d, payload length: %d",
-         (int)udp_frame->source_port, (int)udp_frame->destination_port,
-         udp_payload_length);
-
     // todo crz: UDP checksum calc seems a bit complicated
 
-    if (UDP_PORT_ECHO == udp_frame->destination_port)
+    unsigned const source_port = NTOHS(udp_frame->source_port);
+    unsigned const destination_port = NTOHS(udp_frame->destination_port);
+    int const frame_length = NTOHS(udp_frame->length);
+    int const payload_length = frame_length - sizeof(struct udp_frame_t);
+
+    if (UDP_PORT_ECHO == destination_port)
     {
-        LOGD("returning ECHO request with '%.*s'", udp_payload_length,
+        LOGD("returning ECHO request with '%.*s'", payload_length,
              (char *)udp_frame->payload);
 
         udp_frame->destination_port = udp_frame->source_port;
-        udp_frame->source_port = UDP_PORT_ECHO;
+        udp_frame->source_port = HTONS(UDP_PORT_ECHO);
 
-        HTONS_INPLACE(udp_frame->source_port);
-        HTONS_INPLACE(udp_frame->destination_port);
-        HTONS_INPLACE(udp_frame->length);
-
-        ipv4_send_from(interface, frame, udp_frame_length,
-                       ipv4_frame->source_ip);
+        ipv4_send_from(interface, frame, frame_length, ipv4_frame->source_ip);
     }
     else
     {
-        // todo crz: do something fun with UDP
+        LOGV("UDP rx source port: %u, dest port: %u (%04x), payload length: %d",
+             source_port, destination_port, destination_port, payload_length);
+
+        _api.udp_received_callback(interface, frame, udp_frame->payload,
+                                   payload_length, destination_port,
+                                   ipv4_frame->source_ip, source_port);
     }
 }
 
@@ -277,19 +328,19 @@ static void ipv4_handle_frame(struct interface_t const *interface,
 
     if (ipv4_frame->version != IPV4_PROTOCOL_VERSION)
     {
-        LOGW("bad IPV4 datagram version");
+        LOGW("IPV4: unsupported datagram version %d", (int)ipv4_frame->version);
         return;
     }
 
     if (ipv4_frame->header_length < IPV4_MINIMUM_HEADER_LENGTH_WORDS)
     {
-        LOGW("bad IPV4 header length");
+        LOGW("IPV4: unsupported header length %d", ipv4_frame->header_length);
         return;
     }
 
     if (ipv4_frame->time_to_live == 0)
     {
-        LOGW("IPV4 TTL is zero");
+        LOGW("IPV4: TTL is zero");
         return;
     }
 
@@ -297,67 +348,34 @@ static void ipv4_handle_frame(struct interface_t const *interface,
                                     IPV4_HEADER_WORD_SIZE;
     if (ipv4_checksum(ipv4_frame, header_length_bytes))
     {
-        LOGW("bad IPV4 checksum");
+        LOGW("IPV4: bad checksum");
         return;
     }
 
-    NTOHS_INPLACE(ipv4_frame->frame_length);
+    INPLACE(NTOHS, ipv4_frame->frame_length);
 
     switch (ipv4_frame->protocol)
     {
     case IPV4_PROTOCOL_ICMPV4:
-        LOGD("IPV4 ICMPV4");
+        LOGV("IPV4: ICMPV4");
         icmpv4_handle_frame(interface, frame);
         break;
+    case IPV4_PROTOCOL_TCP:
+        LOGV("IPV4: TCP");
+        tcp_handle_frame(interface, frame);
+        break;
     case IPV4_PROTOCOL_UDP:
-        LOGD("IPV4 UDP");
+        LOGV("IPV4: UDP");
         udp_handle_frame(interface, frame);
         break;
     default:
-        LOGV("unhandled IPv4 protocol 0x02%x\n", (int)ipv4_frame->protocol);
+        LOGV("IPV4: unsupported protocol 0x02%x\n", (int)ipv4_frame->protocol);
         break;
     }
 }
 
 // https://datatracker.ietf.org/doc/html/rfc826
 // https://en.wikipedia.org/wiki/Address_Resolution_Protocol
-
-enum arp_constants_enum
-{
-    ARP_HARDWARE_TYPE_ETHERNET = 0x0001,
-    ARP_PROTOCOL_TYPE_IPV4 = 0x0800,
-    ARP_OPERATION_TYPE_REQUEST = 0x0001,
-    ARP_OPERATION_TYPE_REPLY = 0x0002,
-};
-
-enum arp_cache_entry_state_enum
-{
-    ARP_CACHE_ENTRY_STATE_FREE = 0,
-    ARP_CACHE_ENTRY_STATE_WAITING,
-    ARP_CACHE_ENTRY_STATE_RESOLVED,
-};
-
-struct arp_frame_t
-{
-    uint16_t hardware_type;
-    uint16_t protocol_type;
-    uint8_t hardware_address_length;
-    uint8_t protocol_address_length;
-    uint16_t operation;
-    uint8_t sender_hardware_address[6];
-    uint32_t sender_protocol_address;
-    uint8_t target_hardware_address[6];
-    uint32_t target_protocol_address;
-} __attribute__((packed));
-
-struct arp_cache_entry_t
-{
-    uint32_t protocol_address;
-    uint8_t hardware_address[6];
-};
-
-static struct arp_cache_entry_t arp_cache[ARP_CACHE_NUMBER_OF_ENTRIES];
-static int arp_cache_next_entry_index = 0;
 
 static void arp_cache_insert(struct arp_frame_t const *frame)
 {
@@ -399,6 +417,8 @@ uint8_t const *arp_lookup(uint32_t protocol_address)
         }
     }
 
+    LOGW("ARP: lookup failed for protocol address %08x", protocol_address);
+
     return 0;
 }
 
@@ -406,19 +426,21 @@ static void arp_handle_frame(struct interface_t const *interface,
                              struct ethernet_frame_t *frame)
 {
     struct arp_frame_t *arp_frame = (struct arp_frame_t *)frame->payload;
-    NTOHS_INPLACE(arp_frame->hardware_type);
-    NTOHS_INPLACE(arp_frame->protocol_type);
-    NTOHS_INPLACE(arp_frame->operation);
+    INPLACE(NTOHS, arp_frame->operation);
+    INPLACE(NTOHS, arp_frame->hardware_type);
+    INPLACE(NTOHS, arp_frame->protocol_type);
 
     if (ARP_HARDWARE_TYPE_ETHERNET != arp_frame->hardware_type)
     {
-        LOGW("wrong hardware type (%d)", (int)arp_frame->hardware_type);
+        LOGW("ARP: unsupported hardware type (%d)",
+             (int)arp_frame->hardware_type);
         return;
     }
 
     if (ARP_PROTOCOL_TYPE_IPV4 != arp_frame->protocol_type)
     {
-        LOGW("wrong protocol type (%d)", (int)arp_frame->protocol_type);
+        LOGW("ARP: unsupported protocol type (%d)",
+             (int)arp_frame->protocol_type);
         return;
     }
 
@@ -426,7 +448,7 @@ static void arp_handle_frame(struct interface_t const *interface,
 
     if (interface->protocol_address != arp_frame->target_protocol_address)
     {
-        LOGV("ARP request for some other IP");
+        LOGV("ARP: request for some other IP");
 
         return;
     }
@@ -439,12 +461,12 @@ static void arp_handle_frame(struct interface_t const *interface,
     switch (arp_frame->operation)
     {
     case ARP_OPERATION_TYPE_REQUEST:
-        LOGV("sending ARP response");
+        LOGV("ARP: sending response");
 
         arp_frame->operation = ARP_OPERATION_TYPE_REPLY;
-        HTONS_INPLACE(arp_frame->operation);
-        HTONS_INPLACE(arp_frame->hardware_type);
-        HTONS_INPLACE(arp_frame->protocol_type);
+        INPLACE(HTONS, arp_frame->operation);
+        INPLACE(HTONS, arp_frame->hardware_type);
+        INPLACE(HTONS, arp_frame->protocol_type);
 
         arp_frame->target_protocol_address = arp_frame->sender_protocol_address;
         arp_frame->sender_protocol_address = interface->protocol_address;
@@ -460,7 +482,7 @@ static void arp_handle_frame(struct interface_t const *interface,
                            arp_frame->target_hardware_address);
         break;
     default:
-        LOGV("unhandled ARP opcode (0x%02x)", arp_frame->operation);
+        LOGV("ARP: unsupported opcode 0x%02x", arp_frame->operation);
         break;
     }
 }
@@ -468,36 +490,51 @@ static void arp_handle_frame(struct interface_t const *interface,
 static void ethernet_handle_frame(struct interface_t const *interface,
                                   struct ethernet_frame_t *frame)
 {
-    NTOHS_INPLACE(frame->ethertype);
+    INPLACE(NTOHS, frame->ethertype);
 
     switch (frame->ethertype)
     {
     case ETHERTYPE_ARP:
-        LOGD("ethertype: ARP");
+        LOGD("ETH: ethertype 0x%04x (ARP)", frame->ethertype);
         arp_handle_frame(interface, frame);
         break;
     case ETHERTYPE_IPV4:
-        LOGD("ethertype: IPV4");
+        LOGD("ETH: ethertype 0x%04x (IPV4)", frame->ethertype);
         ipv4_handle_frame(interface, frame);
         break;
     default:
-        LOGV("unhandled ethertype: %04x", frame->ethertype);
+        LOGD("ETH: unsupported ethertype 0x%04x", frame->ethertype);
         break;
     }
 }
 
-void SHiP_init(SHiP_send_callback_t send_func, SHiP_log_callback_t log_func)
+void SHiP_init(struct SHiP_api const *api)
 {
-    _send_func = send_func;
-    _log_func = log_func;
+    _api = *api;
 
     memset(arp_cache, 0,
            ARP_CACHE_NUMBER_OF_ENTRIES * sizeof(struct arp_cache_entry_t));
 }
 
-void SHiP_run(struct interface_t const *interface, uint8_t *data)
+void SHiP_process_raw_frame(struct interface_t const *interface, uint8_t *data)
 {
     struct ethernet_frame_t *frame = (struct ethernet_frame_t *)data;
 
     ethernet_handle_frame(interface, frame);
+}
+
+void SHiP_send_udp(struct interface_t const *interface, uint8_t const *payload,
+                   int payload_length, uint32_t destination_ip,
+                   int destination_port, int source_port)
+{
+    struct ethernet_frame_t *frame = (struct ethernet_frame_t *)_api.tx_buffer;
+
+    udp_send_from(interface, frame, payload, payload_length, destination_ip,
+                  destination_port, source_port);
+}
+
+void SHiP_send_frame(struct interface_t const *, struct ethernet_frame_t *frame,
+                     int frame_length)
+{
+    _api.deliver_raw_frame_callback((uint8_t *)frame, frame_length);
 }
