@@ -533,7 +533,7 @@ void SHiP_send_udp(struct interface_t const *interface, uint8_t const *payload,
                   destination_port, source_port);
 }
 
-void SHiP_send_frame(struct interface_t const *, struct ethernet_frame_t *frame,
+void SHiP_send_frame(struct interface_t const *interface, struct ethernet_frame_t *frame,
                      int frame_length)
 {
     _api.deliver_raw_frame_callback((uint8_t *)frame, frame_length);
