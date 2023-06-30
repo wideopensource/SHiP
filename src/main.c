@@ -15,6 +15,9 @@
 
 static int fd;
 
+static uint8_t rx_buffer[MTU_SIZE];
+static uint8_t tx_buffer[MTU_SIZE];
+
 static int tun_alloc(char *dev)
 {
     struct ifreq ifr;
@@ -56,6 +59,28 @@ static int send_callback(uint8_t const *data, int len)
     return len == write(fd, data, len);
 }
 
+static void udp_rx_callback(struct interface_t const *interface,
+                            struct ethernet_frame_t *frame, uint8_t const *data,
+                            int length, int destination_port,
+                            uint32_t source_ip, int source_port)
+{
+    printf("udp_rx_callback: port: %d (<- %d), payload length: %d\n", destination_port,
+           source_port, length);
+
+    if (1234 == destination_port)
+    {
+        printf("udp_rx_callback: port 1234 handler\n");
+
+        SHiP_send_udp(interface, "hello me!", 9, source_ip, 1729, 1234);
+    }
+}
+
+static void tcp_rx_callback(struct interface_t const *interface,
+                            struct ethernet_frame_t *frame, int frame_length)
+{
+    printf("tcp_rx_callback: frame length: %d\n", frame_length);
+}
+
 static void log_callback(char const *message)
 {
     puts(message);
@@ -81,7 +106,16 @@ int main(int argc, char **argv)
     char local_interface_name[10];
     setup_virtual_subnet(local_interface_name);
 
-    SHiP_init(send_callback, log_callback);
+    struct SHiP_api const api = {
+        .deliver_raw_frame_callback = send_callback,
+        .udp_received_callback = udp_rx_callback,
+        .tcp_received_callback = tcp_rx_callback,
+        .log_callback = log_callback,
+        .tx_buffer = tx_buffer,
+        .tx_buffer_length = sizeof(tx_buffer),
+    };
+
+    SHiP_init(&api);
 
     struct interface_t const remote_interface = {
         .protocol_address = MAKE_IP_U32(10, 0, 0, 3),
@@ -91,10 +125,9 @@ int main(int argc, char **argv)
            remote_interface.hardware_address[0],
            remote_interface.protocol_address);
 
-    uint8_t buffer[MTU_SIZE];
-    while (read(fd, buffer, sizeof(buffer)) >= 0)
+    while (read(fd, rx_buffer, sizeof(rx_buffer)) >= 0)
     {
-        SHiP_run(&remote_interface, buffer);
+        SHiP_process_raw_frame(&remote_interface, rx_buffer);
     }
 
     return 0;
