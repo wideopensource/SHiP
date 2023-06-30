@@ -9,15 +9,14 @@
 #define LOG_MESSAGE_MAX_LENGTH 100
 
 #if BYTE_ORDER == LITTLE_ENDIAN
-#define HTONS(V) ((V >> 8) | (V << 8))
-#define NTOHS(V) ((V >> 8) | (V << 8))
+#define HTONS(V) (uint16_t)((V >> 8) | (V << 8))
+#define NTOHS(V) (uint16_t)((V >> 8) | (V << 8))
 #else
 #define HTONS(V) (V)
 #define NTOHS(V) (V)
 #endif
 
-#define HTONS_INPLACE(V) V = HTONS(V)
-#define NTOHS_INPLACE(V) V = NTOHS(V)
+#define INPLACE(M, V) V = M(V)
 
 enum ethertype_enum
 {
