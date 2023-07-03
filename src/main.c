@@ -83,6 +83,7 @@ static void tcp_rx_callback(struct interface_t const *interface,
 
 static void log_callback(char const *message)
 {
+    printf("SHiP>");
     puts(message);
 }
 
@@ -101,15 +102,49 @@ static void setup_virtual_subnet(char *interface_name)
                                interface_name);
 }
 
+static int rejected = 0;
+static int unsupported = 0;
+static int arp_count = 0;
+static int ping_count = 0;
+static int udp_echo_count = 0;
+
+static int event_callback(enum SHiP_event_type_enum event_type, struct interface_t const *interface, struct ethernet_frame_t const *frame,
+                                                 int frame_length)
+{
+	switch(event_type)
+	{
+	case SHiP_EVENT_TYPE_DELIVER_FRAME:
+        return frame_length == write(fd, (uint8_t *)frame, frame_length);
+	case SHiP_EVENT_TYPE_ARP:
+		++arp_count;
+		break;
+	case SHiP_EVENT_TYPE_PING:
+		++ping_count;
+		break;
+	case SHiP_EVENT_TYPE_UDP_ECHO:
+		++udp_echo_count;
+		break;
+	case SHiP_EVENT_TYPE_FRAME_REJECTED:
+	    printf("rejected %d\n", ++rejected);
+		break;
+	case SHiP_EVENT_TYPE_FRAME_UNSUPPORTED:
+	    printf("unsupported %d\n", ++unsupported);
+		break;
+	default:
+	    printf("SHiP event %d\n", event_type);
+		break;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
     char local_interface_name[10];
     setup_virtual_subnet(local_interface_name);
 
     struct SHiP_api const api = {
-        .deliver_raw_frame_callback = send_callback,
+        .event_callback = event_callback,
         .udp_received_callback = udp_rx_callback,
-        .tcp_received_callback = tcp_rx_callback,
         .log_callback = log_callback,
         .tx_buffer = tx_buffer,
         .tx_buffer_length = sizeof(tx_buffer),
@@ -121,13 +156,19 @@ int main(int argc, char **argv)
         .protocol_address = MAKE_IP_U32(10, 0, 0, 3),
         .hardware_address = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66}};
 
-    printf("name; %s, hw: %02x, proto:%08x\n", local_interface_name,
+    printf("name: %s, hw: %02x, proto:%08x\n", local_interface_name,
            remote_interface.hardware_address[0],
            remote_interface.protocol_address);
 
-    while (read(fd, rx_buffer, sizeof(rx_buffer)) >= 0)
+    while (1)
     {
-        SHiP_process_raw_frame(&remote_interface, rx_buffer);
+        int const length = read(fd, rx_buffer, sizeof(rx_buffer));
+        if (length < 0)
+        {
+            break;
+        }
+
+        SHiP_process_raw_frame(&remote_interface, rx_buffer, length);
     }
 
     return 0;
