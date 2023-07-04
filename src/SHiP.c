@@ -1,12 +1,10 @@
 #include "SHiP.h"
+#include "SHiP_config.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define ARP_CACHE_NUMBER_OF_ENTRIES 32
-#define LOG_MESSAGE_MAX_LENGTH 100
 
 #if BYTE_ORDER == LITTLE_ENDIAN
 #define HTONS(V) (uint16_t)((V >> 8) | (V << 8))
@@ -84,18 +82,32 @@ struct icmpv4_frame_t
     uint8_t payload[];
 } __attribute__((packed));
 
+#ifndef LOGE
 #define LOGE(...) logger(__VA_ARGS__)
+#endif
+#ifndef LOGW
 #define LOGW(...) logger(__VA_ARGS__)
-#define LOGI(...) logger(__VA_ARGS__)
-// #define LOGD(...) logger(__VA_ARGS__)
-// #define LOGV(...) logger(__VA_ARGS__)
+#endif
+#ifndef LOGI
+#define LOGI(...)
+#endif
+#ifndef LOGD
 #define LOGD(...)
+#endif
+#ifndef LOGV
 #define LOGV(...)
+#endif
 
 uint8_t const *arp_lookup(uint32_t protocol_address);
 
-static struct arp_cache_entry_t arp_cache[ARP_CACHE_NUMBER_OF_ENTRIES];
-static int arp_cache_next_entry_index = 0;
+#ifndef STATIC_ARP_CACHE
+#define STATIC_ARP_CACHE
+#endif
+
+static struct arp_cache_entry_t arp_cache[ARP_CACHE_NUMBER_OF_ENTRIES] = {
+    STATIC_ARP_CACHE};
+
+static int arp_cache_next_entry_index = 2;
 static struct SHiP_api _api;
 
 static void logger(char *str, ...)
@@ -429,7 +441,7 @@ static int arp_cache_try_merge(struct arp_frame_t const *frame)
 
 uint8_t const *arp_lookup(uint32_t protocol_address)
 {
-    for (int i = 0; i < ARP_CACHE_NUMBER_OF_ENTRIES; ++i)
+    for (int i = 0; i < arp_cache_next_entry_index; ++i)
     {
         struct arp_cache_entry_t const *entry = arp_cache + i;
 
@@ -543,9 +555,6 @@ static void ethernet_handle_frame(struct interface_t const *interface,
 void SHiP_init(struct SHiP_api const *api)
 {
     _api = *api;
-
-    memset(arp_cache, 0,
-           ARP_CACHE_NUMBER_OF_ENTRIES * sizeof(struct arp_cache_entry_t));
 }
 
 void SHiP_process_raw_frame(struct interface_t const *interface, uint8_t *data,

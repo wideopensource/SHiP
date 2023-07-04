@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+#define MAKE_U32_BE(A, B, C, D) (((A) << 24) | ((B) << 16) | ((C) << 8) | (D))
+#define MAKE_U32_LE(A, B, C, D) MAKE_U32_BE(D, C, B, A)
+#define MAKE_IP_U32 MAKE_U32_LE
+
 enum SHiP_event_type_enum
 {
     SHiP_EVENT_TYPE_INVALID = 0,

@@ -64,14 +64,15 @@ static void udp_rx_callback(struct interface_t const *interface,
                             int length, int destination_port,
                             uint32_t source_ip, int source_port)
 {
-    printf("udp_rx_callback: port: %d (<- %d), payload length: %d\n", destination_port,
-           source_port, length);
+    printf("udp_rx_callback: port: %d (<- %d), payload length: %d\n",
+           destination_port, source_port, length);
 
     if (1234 == destination_port)
     {
         printf("udp_rx_callback: port 1234 handler\n");
 
-        SHiP_send_udp(interface, "hello me!", 9, source_ip, 1729, 1234);
+        SHiP_send_udp(interface, "hello me!", 9, MAKE_IP_U32(10, 0, 0, 97),
+                      1729, 1234);
     }
 }
 
@@ -86,10 +87,6 @@ static void log_callback(char const *message)
     printf("SHiP>");
     puts(message);
 }
-
-#define MAKE_U32_BE(A, B, C, D) (((A) << 24) | ((B) << 16) | ((C) << 8) | (D))
-#define MAKE_U32_LE(A, B, C, D) MAKE_U32_BE(D, C, B, A)
-#define MAKE_IP_U32 MAKE_U32_LE
 
 static void setup_virtual_subnet(char *interface_name)
 {
@@ -108,33 +105,35 @@ static int arp_count = 0;
 static int ping_count = 0;
 static int udp_echo_count = 0;
 
-static int event_callback(enum SHiP_event_type_enum event_type, struct interface_t const *interface, struct ethernet_frame_t const *frame,
-                                                 int frame_length)
+static int event_callback(enum SHiP_event_type_enum event_type,
+                          struct interface_t const *interface,
+                          struct ethernet_frame_t const *frame,
+                          int frame_length)
 {
-	switch(event_type)
-	{
-	case SHiP_EVENT_TYPE_DELIVER_FRAME:
+    switch (event_type)
+    {
+    case SHiP_EVENT_TYPE_DELIVER_FRAME:
         return frame_length == write(fd, (uint8_t *)frame, frame_length);
-	case SHiP_EVENT_TYPE_ARP:
-		++arp_count;
-		break;
-	case SHiP_EVENT_TYPE_PING:
-		++ping_count;
-		break;
-	case SHiP_EVENT_TYPE_UDP_ECHO:
-		++udp_echo_count;
-		break;
-	case SHiP_EVENT_TYPE_FRAME_REJECTED:
-	    printf("rejected %d\n", ++rejected);
-		break;
-	case SHiP_EVENT_TYPE_FRAME_UNSUPPORTED:
-	    printf("unsupported %d\n", ++unsupported);
-		break;
-	default:
-	    printf("SHiP event %d\n", event_type);
-		break;
-	}
-	return 0;
+    case SHiP_EVENT_TYPE_ARP:
+        ++arp_count;
+        break;
+    case SHiP_EVENT_TYPE_PING:
+        ++ping_count;
+        break;
+    case SHiP_EVENT_TYPE_UDP_ECHO:
+        ++udp_echo_count;
+        break;
+    case SHiP_EVENT_TYPE_FRAME_REJECTED:
+        printf("rejected %d\n", ++rejected);
+        break;
+    case SHiP_EVENT_TYPE_FRAME_UNSUPPORTED:
+        printf("unsupported %d\n", ++unsupported);
+        break;
+    default:
+        printf("SHiP event %d\n", event_type);
+        break;
+    }
+    return 0;
 }
 
 int main(int argc, char **argv)
