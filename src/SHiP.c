@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if BYTE_ORDER == LITTLE_ENDIAN
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define HTONS(V) (uint16_t)((V >> 8) | (V << 8))
 #define NTOHS(V) (uint16_t)((V >> 8) | (V << 8))
 #else
