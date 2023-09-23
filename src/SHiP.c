@@ -495,7 +495,7 @@ static void arp_handle_frame(struct interface_t const *interface,
     switch (arp_frame->operation)
     {
     case ARP_OPERATION_TYPE_REQUEST:
-        LOGV("ARP: sending response");
+        LOGD("ARP: ARP_OPERATION_TYPE_REQUEST");
 
         arp_frame->operation = ARP_OPERATION_TYPE_REPLY;
         INPLACE(HTONS, arp_frame->operation);
