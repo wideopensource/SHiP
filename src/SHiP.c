@@ -6,14 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-#define HTONS(V) (uint16_t)((V >> 8) | (V << 8))
-#define NTOHS(V) (uint16_t)((V >> 8) | (V << 8))
-#else
-#define HTONS(V) (V)
-#define NTOHS(V) (V)
-#endif
-
 #define INPLACE(M, V) V = M(V)
 
 enum ethertype_enum

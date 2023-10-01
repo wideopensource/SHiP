@@ -5,6 +5,13 @@
 #define MAKE_U32_BE(A, B, C, D) (((A) << 24) | ((B) << 16) | ((C) << 8) | (D))
 #define MAKE_U32_LE(A, B, C, D) MAKE_U32_BE(D, C, B, A)
 #define MAKE_IP_U32 MAKE_U32_LE
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define HTONS(V) (uint16_t)((V >> 8) | (V << 8))
+#define NTOHS(V) (uint16_t)((V >> 8) | (V << 8))
+#else
+#define HTONS(V) (V)
+#define NTOHS(V) (V)
+#endif
 
 enum SHiP_event_type_enum
 {
