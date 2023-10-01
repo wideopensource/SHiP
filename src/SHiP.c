@@ -191,6 +191,7 @@ void ipv4_send_from(struct interface_t const *interface,
     ipv4_frame->version = IPV4_PROTOCOL_VERSION;
     ipv4_frame->time_to_live = 0xff;
     ipv4_frame->type_of_service = 0;
+    ipv4_frame->fragment_offset = 0;
 
     INPLACE(HTONS, ipv4_frame->frame_length);
 
